@@ -22,6 +22,7 @@ import { mapCanvasPoint, mouseMask, normalizeFingerprint } from "./protocol";
 import { localizeDocument, translate, type TranslationKey } from "./i18n";
 import {
   closeVideoDecoder,
+  createVideoDecoderConfig,
   decodeVideoBatch,
   initialDecoderRecoveryState,
   initialVideoDecodeState,
@@ -302,7 +303,7 @@ function decoderErrorMessage(message: string, mode: "worker" | "main"): string {
   return `${message} [codec=${codec}, size=${dimensions}, mode=${mode}]`;
 }
 
-function recoverDecoder(message: string, mode: "worker" | "main"): void {
+async function recoverDecoder(message: string, mode: "worker" | "main"): Promise<void> {
   const detailed = decoderErrorMessage(message, mode);
   if (!firstDecoderError) firstDecoderError = detailed;
   const recovery = requestDecoderRecovery(decoderRecoveryState);
@@ -314,7 +315,7 @@ function recoverDecoder(message: string, mode: "worker" | "main"): void {
   }
   viewerStatus.textContent = `${t("decoderRecovering")}: ${detailed}`;
   try {
-    configureDecoder(peerInfo, true);
+    await configureDecoder(peerInfo, true);
     send(Message.create({ misc: { refresh_video: true } }));
     sendVideoAck();
   } catch (error) {
@@ -348,10 +349,10 @@ function configureVideoWorker(codec: SelectedVideoCodec, display: DisplayInfo): 
         connectionStats.textContent =
           `${event.data.fps ?? 0} FPS · ${event.data.droppedFrames ?? 0} dropped · ${selectedCodec?.protocol.toUpperCase() ?? ""}`;
       } else {
-        recoverDecoder(event.data.message ?? t("unknownError"), "worker");
+        void recoverDecoder(event.data.message ?? t("unknownError"), "worker");
       }
     });
-    videoWorker.addEventListener("error", () => recoverDecoder(t("unknownError"), "worker"));
+    videoWorker.addEventListener("error", () => void recoverDecoder(t("unknownError"), "worker"));
   }
   const message = {
     type: "initialize",
@@ -378,7 +379,7 @@ function videoFrameTransferables(frame: NonNullable<Message["video_frame"]>): Tr
   return [...buffers];
 }
 
-function configureDecoder(peer: PeerInfo, recovering = false): void {
+async function configureDecoder(peer: PeerInfo, recovering = false): Promise<void> {
   if (!selectedCodec) throw new Error(t("noCodec"));
   const codec = selectedCodec;
   peerInfo = peer;
@@ -421,15 +422,12 @@ function configureDecoder(peer: PeerInfo, recovering = false): void {
         sendVideoAck();
       }
     },
-    error: (error) => recoverDecoder(error.message, "main"),
+    error: (error) => void recoverDecoder(error.message, "main"),
   });
-  decoder.configure({
-    codec: codec.codec,
-    codedWidth: display.width,
-    codedHeight: display.height,
-    optimizeForLatency: true,
-    hardwareAcceleration: "prefer-hardware",
-  });
+  const config = createVideoDecoderConfig(codec.codec, display.width, display.height);
+  const support = await VideoDecoder.isConfigSupported(config);
+  if (!support.supported) throw new Error(`Unsupported video configuration: ${codec.codec}`);
+  decoder.configure(config);
   }
   displaySelect.replaceChildren(
     ...peer.displays.map((item, index) => {
@@ -516,14 +514,14 @@ async function handleMessage(payload: Uint8Array, credentials: Credentials): Pro
       throw new Error(`${message.login_response.error}${retry ? `（${retry} 秒后重试）` : ""}`);
     }
     if (!message.login_response.peer_info) throw new Error("服务器没有返回桌面信息");
-    configureDecoder(message.login_response.peer_info);
+    await configureDecoder(message.login_response.peer_info);
     authenticated = true;
     connectPanel.hidden = true;
     viewerPanel.hidden = false;
     canvas.focus();
     setStatus(t("connected"));
   }
-  if (message.peer_info) configureDecoder(message.peer_info);
+  if (message.peer_info) await configureDecoder(message.peer_info);
   if (message.video_frame) {
     if (videoWorker) {
       videoWorker.postMessage(
@@ -564,18 +562,18 @@ async function handleMessage(payload: Uint8Array, credentials: Credentials): Pro
   }
 }
 
+const VIDEO_CODEC_PROBE_WIDTH = 2560;
+const VIDEO_CODEC_PROBE_HEIGHT = 1440;
+
 async function connect(username: string, password: string): Promise<void> {
   if (!("VideoDecoder" in window) || !("EncodedVideoChunk" in window)) {
     throw new Error(t("webCodecsUnsupported"));
   }
   selectedCodec = await chooseVideoCodec(async (codec) => {
     try {
-      const result = await VideoDecoder.isConfigSupported({
-        codec,
-        codedWidth: 1920,
-        codedHeight: 1080,
-        optimizeForLatency: true,
-      });
+      const result = await VideoDecoder.isConfigSupported(
+        createVideoDecoderConfig(codec, VIDEO_CODEC_PROBE_WIDTH, VIDEO_CODEC_PROBE_HEIGHT),
+      );
       return result.supported === true;
     } catch {
       return false;

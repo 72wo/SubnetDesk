@@ -2,6 +2,7 @@ import type { VideoFrame as ProtocolVideoFrame } from "./generated/message";
 import type { ProtocolVideoCodec } from "./capabilities";
 import {
   closeVideoDecoder,
+  createVideoDecoderConfig,
   decodeVideoBatch,
   initialVideoDecodeState,
   type VideoDecodeState,
@@ -59,7 +60,7 @@ function resetDecoder(): void {
   statsWindowStartedAt = 0;
 }
 
-function initialize(message: InitializeMessage): void {
+async function initialize(message: InitializeMessage): Promise<void> {
   if (message.canvas) {
     canvas = message.canvas;
     context = canvas.getContext("2d", { alpha: false });
@@ -69,6 +70,9 @@ function initialize(message: InitializeMessage): void {
   canvas.width = message.width;
   canvas.height = message.height;
   decodeState = initialVideoDecodeState(message.protocol);
+  const config = createVideoDecoderConfig(message.codec, message.width, message.height);
+  const support = await VideoDecoder.isConfigSupported(config);
+  if (!support.supported) throw new Error(`Unsupported video configuration: ${message.codec}`);
   decoder = new VideoDecoder({
     output: (frame) => {
       context?.drawImage(frame, 0, 0, canvas?.width ?? frame.displayWidth, canvas?.height ?? frame.displayHeight);
@@ -92,13 +96,7 @@ function initialize(message: InitializeMessage): void {
     },
     error: (error) => post({ type: "error", message: error.message }),
   });
-  decoder.configure({
-    codec: message.codec,
-    codedWidth: message.width,
-    codedHeight: message.height,
-    optimizeForLatency: true,
-    hardwareAcceleration: "prefer-hardware",
-  });
+  decoder.configure(config);
 }
 
 function decode(frame: ProtocolVideoFrame): void {
@@ -115,19 +113,23 @@ function decode(frame: ProtocolVideoFrame): void {
   }
 }
 
+let messageQueue = Promise.resolve();
+
 workerScope.onmessage = (event) => {
-  try {
-    if (event.data.type === "initialize") {
-      initialize(event.data);
-    } else if (event.data.type === "frame") {
-      decode(event.data.frame);
-    } else {
-      resetDecoder();
-    }
-  } catch (error) {
-    post({
-      type: "error",
-      message: error instanceof Error ? error.message : "Video worker failed",
+  messageQueue = messageQueue
+    .then(async () => {
+      if (event.data.type === "initialize") {
+        await initialize(event.data);
+      } else if (event.data.type === "frame") {
+        decode(event.data.frame);
+      } else {
+        resetDecoder();
+      }
+    })
+    .catch((error: unknown) => {
+      post({
+        type: "error",
+        message: error instanceof Error ? error.message : "Video worker failed",
+      });
     });
-  }
 };
