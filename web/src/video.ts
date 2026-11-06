@@ -14,6 +14,20 @@ interface ClosableVideoDecoder {
 
 type EncodedVideoChunkFactory = (init: EncodedVideoChunkInit) => EncodedVideoChunk;
 
+export function createVideoDecoderConfig(
+  codec: string,
+  codedWidth: number,
+  codedHeight: number,
+): VideoDecoderConfig {
+  return {
+    codec,
+    codedWidth,
+    codedHeight,
+    optimizeForLatency: true,
+    hardwareAcceleration: "prefer-software",
+  };
+}
+
 export interface VideoDecodeState {
   timestamp: number;
   awaitingKeyFrame: boolean;

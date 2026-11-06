@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { VideoFrame } from "../src/generated/message";
 import {
   closeVideoDecoder,
+  createVideoDecoderConfig,
   decodeVideoBatch,
   initialDecoderRecoveryState,
   initialVideoDecodeState,
@@ -9,6 +10,16 @@ import {
 } from "../src/video";
 
 describe("WebCodecs video queue", () => {
+  test("uses a software-first decoder configuration for remote desktop sessions", () => {
+    expect(createVideoDecoderConfig("vp09.00.10.08", 2560, 1440)).toEqual({
+      codec: "vp09.00.10.08",
+      codedWidth: 2560,
+      codedHeight: 1440,
+      optimizeForLatency: true,
+      hardwareAcceleration: "prefer-software",
+    });
+  });
+
   test("allows one decoder rebuild and then stops retrying", () => {
     const first = requestDecoderRecovery(initialDecoderRecoveryState());
     expect(first.shouldRetry).toBe(true);
